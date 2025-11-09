@@ -1,0 +1,6 @@
+# Global owners
+* @DaniilCS @leonidlivshits
+
+# Component owners
+app/auth/* @DaniilCS @leonidlivshits
+app/api/*  @DaniilCS @leonidlivshits

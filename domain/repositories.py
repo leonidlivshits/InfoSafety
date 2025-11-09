@@ -1,0 +1,26 @@
+from __future__ import annotations
+
+from typing import List, Optional, Protocol
+
+from domain.entities import Media, User
+
+
+class MediaRepository(Protocol):
+
+    def add(self, media: Media) -> Media: ...
+
+    def get(self, media_id: int) -> Optional[Media]: ...
+
+    def list(
+        self, kind: Optional[str] = None, status: Optional[str] = None, limit: int = 100
+    ) -> List[Media]: ...
+
+    def update(self, media: Media) -> Media: ...
+
+    def delete(self, media_id: int) -> None: ...
+
+
+class UserRepository(Protocol):
+    def add(self, user: User) -> User: ...
+    def get_by_id(self, user_id: int) -> Optional[User]: ...
+    def get_by_username(self, username: str) -> Optional[User]: ...
