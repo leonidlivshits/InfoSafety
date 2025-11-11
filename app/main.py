@@ -1,3 +1,6 @@
+import asyncio
+import logging
+import secrets
 from typing import Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
@@ -8,6 +11,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from adapters.orm.media_repository import MediaRepositorySQLAlchemy
 from adapters.orm.user_repository import UserRepositorySQLAlchemy
 from adapters.persistence import Base, engine, get_db
+from app.backup_scheduler import _run_backup_once, lifespan
+from app.config import settings
 from app.errors import (
     generic_exception_handler,
     http_exception_handler,
@@ -18,10 +23,19 @@ from domain.entities import User as DomainUser
 from schemas.media import MediaCreate, MediaRead, MediaUpdate
 from usecases.media_service import MediaService
 
-FastAPIHTTPException = HTTPException
+app = FastAPI(title="Media Catalog", lifespan=lifespan)
 
-app = FastAPI(title="Media Catalog")
+
+logger = logging.getLogger(__name__)
+
 app.add_middleware(SimpleRateLimiterMiddleware)
+
+if not hasattr(app.state, "backup_lock"):
+    app.state.backup_lock = asyncio.Lock()
+if not hasattr(app.state, "backup_failures"):
+    app.state.backup_failures = 0
+if not hasattr(app.state, "backup_last_run"):
+    app.state.backup_last_run = 0.0
 
 
 @app.on_event("startup")
@@ -40,7 +54,7 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     return await http_exception_handler(request, exc)
 
 
-app.add_exception_handler(FastAPIHTTPException, _http_exception_handler)
+app.add_exception_handler(HTTPException, _http_exception_handler)
 
 
 @app.exception_handler(RequestValidationError)
@@ -146,6 +160,65 @@ def delete_media(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+
+def _is_valid_admin_token(token: str) -> bool:
+    for t in settings.BACKUP_ADMIN_TOKENS:
+        if secrets.compare_digest(token, t):
+            return True
+    return False
+
+
+def require_backup_admin(x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token")):
+    if not settings.BACKUP_ADMIN_TOKENS:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="backup not allowed")
+    if x_admin_token is None or not _is_valid_admin_token(x_admin_token):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="forbidden")
+    return True
+
+
+@app.post("/backup/run")
+async def run_backup_endpoint(authorized: bool = Depends(require_backup_admin)):
+    if not settings.BACKUP_ENABLED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="backup disabled")
+
+    lock: asyncio.Lock = app.state.backup_lock
+    if lock.locked():
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="backup already running"
+        )
+
+    async with lock:
+        try:
+            out = await _run_backup_once()
+            app.state.backup_failures = 0
+            app.state.backup_last_run = asyncio.get_event_loop().time()
+            logger.info("manual backup succeeded: %s", out)
+            return {"ok": True, "path": out}
+        except Exception as exc:
+            app.state.backup_failures += 1
+            logger.exception("Manual backup failed")
+            if app.state.backup_failures >= settings.MAX_CONSECUTIVE_FAILURES:
+                logger.error(
+                    "backup: reached max consecutive failures (%s), "
+                    "disabling future manual backups",
+                    settings.MAX_CONSECUTIVE_FAILURES,
+                )
+                app.state.backup_disabled_due_errors = True
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="backup failed"
+            ) from exc
+
+
+@app.post("/auth/validate")
+def auth_validate(x_admin_token: Optional[str] = Header(None, alias="X-Admin-Token")):
+    if not settings.BACKUP_ADMIN_TOKENS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="no admin tokens configured"
+        )
+    if x_admin_token is None or not _is_valid_admin_token(x_admin_token):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="invalid token")
+    return {"ok": True, "is_admin": True}
 
 
 @app.get("/health")
