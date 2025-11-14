@@ -14,7 +14,6 @@ def _safe_basename(name: str) -> str:
     """Возвращает безопасное имя файла или возбуждает ValueError при попытке traversal."""
     if not name:
         raise ValueError("empty filename")
-    # запретить path traversal и разделители
     if ".." in name or "/" in name or "\\" in name:
         raise ValueError("invalid filename")
     return name
@@ -52,7 +51,6 @@ def safe_export_sqlite(src: str, dest_dir: str, filename: Optional[str] = None) 
 
     tmp = None
     try:
-        # NamedTemporaryFile delete=False чтобы потом закрыть/переместить
         tf = tempfile.NamedTemporaryFile(
             prefix=f"{base}-", suffix=".db.tmp", dir=dest_dir, delete=False
         )
@@ -61,19 +59,16 @@ def safe_export_sqlite(src: str, dest_dir: str, filename: Optional[str] = None) 
 
         logger.debug("backup: copying %s -> tmp %s", src, tmp)
 
-        # копируем содержимое
         with open(src, "rb") as fr, open(tmp, "wb") as fw:
             shutil.copyfileobj(fr, fw)
             fw.flush()
             os.fsync(fw.fileno())
 
-        # атомарно перемещаем
         os.replace(tmp, dest_final)
         logger.info("backup: created %s", dest_final)
         return dest_final
     except Exception:
         logger.exception("backup: failed exporting %s to %s (tmp=%s)", src, dest_dir, tmp)
-        # попытка удалить временный файл
         try:
             if tmp and os.path.exists(tmp):
                 os.remove(tmp)
