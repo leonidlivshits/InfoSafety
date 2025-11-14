@@ -1,59 +1,70 @@
-import os
 import time
-from typing import Callable, Dict, Tuple
+from typing import Optional
 
-from fastapi import Request
-from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp
-
-from app.errors import make_problem_detail
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 
-class SimpleRateLimiterMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app: ASGIApp, **kwargs) -> None:
-        super().__init__(app)
-        self._ensure_init()
+class SimpleRateLimiterMiddleware:
 
-    def _ensure_init(self) -> None:
-        if getattr(self, "_initialized", False):
-            return
-        self.limit = int(os.getenv("RATE_LIMIT_REQUESTS", "100"))
-        self.window = int(os.getenv("RATE_LIMIT_WINDOW", "60"))
-        self._store: Dict[str, Tuple[int, int]] = {}
-        self._initialized = True
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_requests: int = 100,
+        window_seconds: int = 60,
+        exempt_paths: Optional[set] = None,
+    ):
+        self.app = app
+        self.max_requests = int(max_requests)
+        self.window = int(window_seconds)
+        self.exempt_paths = exempt_paths or {"/health"}
+        self._store: dict[str, list[float]] = {}
 
-    def _get_client_key(self, request: Request) -> str:
-        xff = request.headers.get("x-forwarded-for")
-        if xff:
-            return xff.split(",")[0].strip()
-        client = request.client.host if request.client else "unknown"
-        return client
+    def _now(self) -> float:
+        return time.time()
 
-    async def dispatch(self, request: Request, call_next: Callable):
-        self._ensure_init()
+    def _key_for_scope(self, scope: Scope) -> str:
+        client = scope.get("client")
+        ip = client[0] if client and isinstance(client, (list, tuple)) else "unknown"
+        path = scope.get("path", "")
+        method = scope.get("method", "")
+        return f"{ip}:{method}:{path}"
 
-        key = self._get_client_key(request)
-        now = int(time.time())
-
-        window_start, count = self._store.get(key, (now, 0))
-        if now - window_start >= self.window:
-            window_start, count = now, 0
-        count += 1
-        self._store[key] = (window_start, count)
-
-        if count > self.limit:
-            retry_after = self.window - (now - window_start)
-            if retry_after < 0:
-                retry_after = 0
-            detail = f"Too many requests, retry after {retry_after} seconds"
-            problem = make_problem_detail(status=429, title="TooManyRequests", detail=detail)
-            headers = {"Retry-After": str(retry_after)}
-            return JSONResponse(status_code=429, content=problem, headers=headers)
-
-        response = await call_next(request)
-        return response
+    def _prune(self, timestamps: list[float]) -> list[float]:
+        cutoff = self._now() - self.window
+        return [t for t in timestamps if t >= cutoff]
 
     def _reset(self) -> None:
-        self._ensure_init()
         self._store.clear()
+
+    reset = _reset
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope.get("path", "")
+        if path in self.exempt_paths:
+            await self.app(scope, receive, send)
+            return
+
+        key = self._key_for_scope(scope)
+        timestamps = self._store.get(key, [])
+        timestamps = self._prune(timestamps)
+
+        if len(timestamps) >= self.max_requests:
+            from starlette.responses import JSONResponse
+
+            problem = {
+                "type": "about:blank",
+                "title": "TooManyRequests",
+                "status": 429,
+                "detail": "rate limit exceeded",
+                "correlation_id": "",
+            }
+            await JSONResponse(status_code=429, content=problem)(scope, receive, send)
+            return
+
+        timestamps.append(self._now())
+        self._store[key] = timestamps
+        await self.app(scope, receive, send)
