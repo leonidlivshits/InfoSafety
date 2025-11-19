@@ -61,7 +61,6 @@ jobs:
           DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          # If secrets are not defined, skip pushing (safe no-op)
           if [ -z "${DOCKERHUB_USER}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
             echo "Docker push skipped: registry credentials not configured"
             exit 0
