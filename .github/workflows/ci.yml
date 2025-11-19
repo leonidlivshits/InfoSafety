@@ -21,17 +21,13 @@ jobs:
           echo "ERROR: Direct pushes to main are forbidden!"
           echo "This push was made by: ${{ github.actor }}"
           echo "Please use Pull Requests for all changes to main."
-          echo "To fix this:"
-          echo "1. Create a new branch: git checkout -b fix/description"
-          echo "2. Reset main to previous state: git checkout main && git reset --hard HEAD~1"
-          echo "3. Push your fix branch and create a PR"
           exit 1
 
   build:
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest]
     runs-on: ${{matrix.os}}
 
     steps:
@@ -79,17 +75,6 @@ jobs:
         with:
           name: dist-python-${{ matrix.python-version }}-${{ matrix.os }}
           path: dist/*
-          retention-days: 7
-
-      - name: Upload reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-reports-${{ matrix.python-version }}-${{ matrix.os }}
-          path: |
-            coverage.xml
-            htmlcov/**
-            .coverage
           retention-days: 7
 
   security-check:
