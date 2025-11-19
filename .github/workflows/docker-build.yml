@@ -47,8 +47,7 @@ jobs:
           cache-to: type=local,dest=/tmp/.buildx-cache
 
       - name: Save image to tar
-        run: |
-          docker image save media-catalog:ci-${{ github.sha }} -o docker-image-${{ github.sha }}.tar
+        run: docker image save media-catalog:ci-${{ github.sha }} -o docker-image-${{ github.sha }}.tar
 
       - name: Upload docker image artifact
         uses: actions/upload-artifact@v4
@@ -65,7 +64,6 @@ jobs:
             echo "DOCKERHUB secrets not set — skipping push"
             exit 0
           fi
-
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
           docker tag media-catalog:ci-${{ github.sha }} ${DOCKERHUB_USER}/media-catalog:latest
           docker push ${DOCKERHUB_USER}/media-catalog:latest
