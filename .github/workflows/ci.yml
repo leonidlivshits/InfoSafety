@@ -52,7 +52,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
-          pip install mypy pytest-cov build
+          pip install mypy pytest-cov
 
       - name: Lint & Format
         run: |
@@ -62,20 +62,10 @@ jobs:
 
       - name: Tests with coverage
         run: |
-          pytest --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=65
+          pytest --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=70
 
       - name: Pre-commit (all files)
         run: pre-commit run --all-files
-
-      - name: Build package
-        run: python -m build
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: dist-python-${{ matrix.python-version }}-${{ matrix.os }}
-          path: dist/*
-          retention-days: 7
 
   security-check:
     runs-on: ubuntu-latest
@@ -116,12 +106,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: dist-*
-          path: dist/
-
       - name: Simulate deploy
         run: |
           echo "Health check..."
@@ -139,12 +123,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: dist-*
-          path: dist/
 
       - name: Prod deploy simulation
         run: |
