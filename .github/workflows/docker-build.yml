@@ -1,0 +1,67 @@
+name: Docker Build & Artifact
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Cache buildx layers
+        uses: actions/cache@v4
+        id: buildx-cache
+        with:
+          path: /tmp/.buildx-cache
+          key: buildx-${{ github.sha }}
+          restore-keys: |
+            buildx-
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          tags: media-catalog:ci-${{ github.sha }}
+          load: true
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+
+      - name: Save image to tar
+        run: |
+          docker image save media-catalog:ci-${{ github.sha }} -o docker-image-${{ github.sha }}.tar
+
+      - name: Upload docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ github.sha }}
+          path: docker-image-${{ github.sha }}.tar
+
+      - name: (optional) Push to registry if secrets present
+        if: ${{ secrets.DOCKERHUB_USERNAME && secrets.DOCKERHUB_TOKEN }}
+        env:
+          DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
+          docker tag media-catalog:ci-${{ github.sha }} ${DOCKERHUB_USER}/media-catalog:latest
+          docker push ${DOCKERHUB_USER}/media-catalog:latest
