@@ -56,7 +56,7 @@ jobs:
           name: docker-image-${{ github.sha }}
           path: docker-image-${{ github.sha }}.tar
 
-      - name: (optional) Push to registry if secrets present
+      - name: (optional) Push to DockerHub if credentials provided
         env:
           DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
