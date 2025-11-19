@@ -56,16 +56,12 @@ jobs:
           name: docker-image-${{ github.sha }}
           path: docker-image-${{ github.sha }}.tar
 
-      - name: (optional) Push to registry (if secrets configured)
+      - name: (optional) Push to registry if secrets present
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
         env:
           DOCKERHUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [ -z "${DOCKERHUB_USER}" ] || [ -z "${DOCKERHUB_TOKEN}" ]; then
-            echo "Docker push skipped: registry credentials not configured"
-            exit 0
-          fi
-
           echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
           docker tag media-catalog:ci-${{ github.sha }} ${DOCKERHUB_USER}/media-catalog:latest
           docker push ${DOCKERHUB_USER}/media-catalog:latest
