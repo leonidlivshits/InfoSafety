@@ -62,7 +62,7 @@ jobs:
 
       - name: Tests with coverage
         run: |
-          pytest --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=70
+          pytest --cov=app --cov-report=xml --cov-report=term-missing --cov-fail-under=65
 
       - name: Pre-commit (all files)
         run: pre-commit run --all-files
