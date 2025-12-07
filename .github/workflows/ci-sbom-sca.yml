@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  sbom_sca:
+  sbom-sca:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -24,7 +24,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Ensure evidence dir
+      - name: Make evidence dir
         run: mkdir -p EVIDENCE/P09
 
       - name: Install jq (for summary)
@@ -32,33 +32,64 @@ jobs:
 
       - name: Generate SBOM (Syft CycloneDX)
         run: |
+          set -euo pipefail
           docker run --rm -v "$PWD":/work -w /work anchore/syft:latest \
-            packages dir:. -o cyclonedx-json > EVIDENCE/P09/sbom.json
-        timeout-minutes: 10
+            packages dir:. --scope all-layers -o cyclonedx-json > EVIDENCE/P09/sbom.json
+        timeout-minutes: 12
 
-      - name: SCA Scan (Grype - scan SBOM)
+      - name: SCA Scan (Grype) — scan SBOM
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD":/work -w /work anchore/grype:latest \
-            grype -o json sbom:/work/EVIDENCE/P09/sbom.json > EVIDENCE/P09/sca_report.json
-        timeout-minutes: 12
+            sbom:/work/EVIDENCE/P09/sbom.json -o json > EVIDENCE/P09/sca_report.json
+        timeout-minutes: 15
 
       - name: Create SCA summary
         run: |
-          echo "# SCA summary" > EVIDENCE/P09/sca_summary.md
+          set -euo pipefail
+          echo "# SCA Scan Summary" > EVIDENCE/P09/sca_summary.md
           echo "" >> EVIDENCE/P09/sca_summary.md
-          echo "## counts by severity" >> EVIDENCE/P09/sca_summary.md
-          jq -r '.matches[].vulnerability.severity // "UNKNOWN"' EVIDENCE/P09/sca_report.json \
-            | tr '[:upper:]' '[:lower:]' | sort | uniq -c | awk '{print "- " $2 ": " $1}' >> EVIDENCE/P09/sca_summary.md || true
+          echo "**Scan Date:** $(date -u)" >> EVIDENCE/P09/sca_summary.md
+          echo "**Commit:** ${{ github.sha }}" >> EVIDENCE/P09/sca_summary.md
           echo "" >> EVIDENCE/P09/sca_summary.md
-          echo "## top findings (first 20)" >> EVIDENCE/P09/sca_summary.md
-          jq -r '.matches[] | [.vulnerability.id, .artifact.name, .vulnerability.severity] | @tsv' EVIDENCE/P09/sca_report.json \
-            | head -n 20 | awk -F'\t' '{print "- " $1 " — " $2 " — " $3}' >> EVIDENCE/P09/sca_summary.md || true
 
-      - name: Upload SBOM/SCA evidence
+          if [ -f EVIDENCE/P09/sca_report.json ]; then
+            critical=$(jq '[.matches[] | select(.vulnerability.severity == "Critical")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            high=$(jq '[.matches[] | select(.vulnerability.severity == "High")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            medium=$(jq '[.matches[] | select(.vulnerability.severity == "Medium")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            low=$(jq '[.matches[] | select(.vulnerability.severity == "Low")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            unknown=$(jq '[.matches[] | select(.vulnerability.severity == "Unknown")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            total=$(jq '.matches | length' EVIDENCE/P09/sca_report.json || echo "0")
+
+            echo "## Vulnerability Summary" >> EVIDENCE/P09/sca_summary.md
+            echo "" >> EVIDENCE/P09/sca_summary.md
+            echo "| Severity | Count |" >> EVIDENCE/P09/sca_summary.md
+            echo "|----------|-------|" >> EVIDENCE/P09/sca_summary.md
+            echo "| Critical | $critical |" >> EVIDENCE/P09/sca_summary.md
+            echo "| High | $high |" >> EVIDENCE/P09/sca_summary.md
+            echo "| Medium | $medium |" >> EVIDENCE/P09/sca_summary.md
+            echo "| Low | $low |" >> EVIDENCE/P09/sca_summary.md
+            echo "| Unknown | $unknown |" >> EVIDENCE/P09/sca_summary.md
+            echo "| **Total** | **$total** |" >> EVIDENCE/P09/sca_summary.md
+            echo "" >> EVIDENCE/P09/sca_summary.md
+
+            echo "## Vulnerability Details (first 50 matches)" >> EVIDENCE/P09/sca_summary.md
+            jq -r '
+              .matches[] |
+              "### \(.vulnerability.id) — \(.artifact.name)@\(.artifact.version)\n" +
+              "- **Severity:** \(.vulnerability.severity)\n" +
+              "- **Description:** \(.vulnerability.description // "No description")\n" +
+              "- **Fix Versions:** \(.vulnerability.fix.versions // [] | join(", "))\n\n"
+            ' EVIDENCE/P09/sca_report.json | head -n 200 >> EVIDENCE/P09/sca_summary.md || true
+          else
+            echo "SCA report not found" >> EVIDENCE/P09/sca_summary.md
+            exit 1
+          fi
+
+      - name: Upload SBOM & SCA evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: P09_EVIDENCE
+          name: sbom-sca-evidence
           path: EVIDENCE/P09
-          retention-days: 14
+          retention-days: 30
