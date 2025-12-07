@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: "${{ github.workflow }}-${{ github.ref }}"
   cancel-in-progress: true
 
 jobs:
@@ -26,13 +26,12 @@ jobs:
 
   sbom-sca:
     runs-on: ubuntu-latest
-    needs: []
+    timeout-minutes: 15
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run SBOM & SCA workflow (call local ci-sbom-sca)
-        run: echo "Use .github/workflows/ci-sbom-sca.yml (separate workflow) or trigger it manually"
+      - name: SBOM & SCA
+        run: |
+          echo "SBOM/SCA workflow is provided by .github/workflows/ci-sbom-sca.yml"
+          echo "Run that workflow via workflow_dispatch or let it run on changes."
 
   build:
     strategy:
@@ -53,11 +52,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-python-${{ matrix.python-version }}-pip-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}
+          key: "${{ runner.os }}-python-${{ matrix.python-version }}-pip-${{ hashFiles('**/requirements*.txt', '**/pyproject.toml') }}"
           restore-keys: |
-            ${{ runner.os }}-python-${{ matrix.python-version}}-pip-
-            ${{ runner.os }}-python-${{ matrix.python-version}}-
-            ${{ runner.os }}-
+            "${{ runner.os }}-python-${{ matrix.python-version }}-pip-"
+            "${{ runner.os }}-python-${{ matrix.python-version }}-"
+            "${{ runner.os }}-"
 
       - name: Install deps
         run: |
@@ -77,15 +76,40 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test-reports-${{ matrix.python-version }}
+          name: "test-reports-${{ matrix.python-version }}"
           path: |
             .pytest_cache
             .coverage
             coverage.xml
 
+  security-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for hardcoded secrets (simple grep)
+        run: |
+          echo "Checking for potential secrets..."
+          if grep -r -E "(=|\"|')\s*(password|secret|key|token|api[_-]?key)\s*(=|\"|')\s*[^\"'][^,]*[^\"']" \
+              --include="*.py" --include="*.env" --include="*.yaml" --include="*.yml" . \
+              | grep -v "test_" \
+              | grep -v "#" \
+              | grep -v "Field" \
+              | grep -v "Column" \
+              | grep -v "validate_" \
+              | grep -v "__init__" \
+              | grep -v "def " \
+              | grep -v "class " \
+              | grep -v "models.py" \
+              | grep -v "schemas.py" \
+              | grep -v "errors.py"; then
+            echo "Potential hardcoded secrets found in code"
+            exit 1
+          fi
+          echo "No hardcoded secrets found"
 
   deploy-staging:
-    needs: [build, security-check]
+    needs: [build, security-check, sbom-sca]
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     environment: staging
@@ -101,7 +125,7 @@ jobs:
           echo "Staging env is ready"
 
   deploy-prod:
-    needs: deploy-staging
+    needs: [deploy-staging]
     runs-on: ubuntu-latest
     if: github.event_name == 'release' && github.event.action == 'published'
     environment: production

@@ -12,41 +12,33 @@ permissions:
   contents: read
 
 concurrency:
-  group: sbom-sca-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  sbom-sca:
+  sbom_sca:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Make evidence dir
+      - name: Ensure evidence dir
         run: mkdir -p EVIDENCE/P09
-
-      - name: Install jq (for summary)
-        run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Generate SBOM (Syft CycloneDX)
         run: |
-          set -euo pipefail
           docker run --rm -v "$PWD":/work -w /work anchore/syft:latest \
             packages dir:. --scope all-layers -o cyclonedx-json > EVIDENCE/P09/sbom.json
-        timeout-minutes: 12
 
-      - name: SCA Scan (Grype) — scan SBOM
+      - name: SCA Scan (Grype) - scan SBOM
         run: |
-          set -euo pipefail
           docker run --rm -v "$PWD":/work -w /work anchore/grype:latest \
-            sbom:/work/EVIDENCE/P09/sbom.json -o json > EVIDENCE/P09/sca_report.json
-        timeout-minutes: 15
+            -o json sbom:/work/EVIDENCE/P09/sbom.json > EVIDENCE/P09/sca_report.json
 
-      - name: Create SCA summary
+      - name: Generate SCA summary
         run: |
-          set -euo pipefail
           echo "# SCA Scan Summary" > EVIDENCE/P09/sca_summary.md
           echo "" >> EVIDENCE/P09/sca_summary.md
           echo "**Scan Date:** $(date -u)" >> EVIDENCE/P09/sca_summary.md
@@ -61,28 +53,21 @@ jobs:
             unknown=$(jq '[.matches[] | select(.vulnerability.severity == "Unknown")] | length' EVIDENCE/P09/sca_report.json || echo "0")
             total=$(jq '.matches | length' EVIDENCE/P09/sca_report.json || echo "0")
 
-            echo "## Vulnerability Summary" >> EVIDENCE/P09/sca_summary.md
-            echo "" >> EVIDENCE/P09/sca_summary.md
             echo "| Severity | Count |" >> EVIDENCE/P09/sca_summary.md
             echo "|----------|-------|" >> EVIDENCE/P09/sca_summary.md
             echo "| Critical | $critical |" >> EVIDENCE/P09/sca_summary.md
-            echo "| High | $high |" >> EVIDENCE/P09/sca_summary.md
-            echo "| Medium | $medium |" >> EVIDENCE/P09/sca_summary.md
-            echo "| Low | $low |" >> EVIDENCE/P09/sca_summary.md
-            echo "| Unknown | $unknown |" >> EVIDENCE/P09/sca_summary.md
+            echo "| High     | $high     |" >> EVIDENCE/P09/sca_summary.md
+            echo "| Medium   | $medium   |" >> EVIDENCE/P09/sca_summary.md
+            echo "| Low      | $low      |" >> EVIDENCE/P09/sca_summary.md
+            echo "| Unknown  | $unknown  |" >> EVIDENCE/P09/sca_summary.md
             echo "| **Total** | **$total** |" >> EVIDENCE/P09/sca_summary.md
-            echo "" >> EVIDENCE/P09/sca_summary.md
 
-            echo "## Vulnerability Details (first 50 matches)" >> EVIDENCE/P09/sca_summary.md
-            jq -r '
-              .matches[] |
-              "### \(.vulnerability.id) — \(.artifact.name)@\(.artifact.version)\n" +
-              "- **Severity:** \(.vulnerability.severity)\n" +
-              "- **Description:** \(.vulnerability.description // "No description")\n" +
-              "- **Fix Versions:** \(.vulnerability.fix.versions // [] | join(", "))\n\n"
-            ' EVIDENCE/P09/sca_report.json | head -n 200 >> EVIDENCE/P09/sca_summary.md || true
+            if [ "$critical" -gt 0 ]; then
+              echo "Found $critical Critical vulnerabilities - failing job"
+              exit 1
+            fi
           else
-            echo "SCA report not found" >> EVIDENCE/P09/sca_summary.md
+            echo "SCA report missing"
             exit 1
           fi
 
@@ -91,5 +76,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: sbom-sca-evidence
-          path: EVIDENCE/P09
+          path: EVIDENCE/P09/
           retention-days: 30
