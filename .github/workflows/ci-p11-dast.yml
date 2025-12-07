@@ -1,0 +1,109 @@
+name: P11 - DAST
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "app/**"
+      - "requirements*.txt"
+      - ".github/workflows/ci-p11-dast.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dast-zap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure evidence dir
+        run: mkdir -p EVIDENCE/P11
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.11
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Start app (uvicorn) in background
+        run: |
+          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > zap_server.log 2>&1 &
+          echo $! > server.pid
+        env:
+          DATABASE_URL: sqlite:///./data/media.db
+
+      - name: Wait for app to be ready
+        run: |
+          echo "Waiting for http://127.0.0.1:8000/health ..."
+          for i in $(seq 1 30); do
+            if curl -sSf http://127.0.0.1:8000/health >/dev/null 2>&1; then
+              echo "service ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Service failed to become ready - dumping server log"
+          tail -n 200 zap_server.log || true
+          exit 1
+
+      - name: Run OWASP ZAP baseline (docker)
+        run: |
+          docker run --rm \
+            -v "$PWD":/zap/wrk \
+            owasp/zap2docker-stable:latest \
+            zap-baseline.py \
+              -t http://127.0.0.1:8000 \
+              -r /zap/wrk/EVIDENCE/P11/zap_baseline.html \
+              -J /zap/wrk/EVIDENCE/P11/zap_baseline.json \
+              -m 3 \
+              -d
+
+      - name: Generate short summary from zap JSON
+        run: |
+          if [ -f EVIDENCE/P11/zap_baseline.json ]; then
+            echo "# ZAP baseline summary" > EVIDENCE/P11/zap_summary.md
+            echo "" >> EVIDENCE/P11/zap_summary.md
+            echo "Scan target: http://127.0.0.1:8000" >> EVIDENCE/P11/zap_summary.md
+            echo "Commit: $GITHUB_SHA" >> EVIDENCE/P11/zap_summary.md
+            echo "" >> EVIDENCE/P11/zap_summary.md
+            echo "Counts by risk level (High/Medium/Low/Informational):" >> EVIDENCE/P11/zap_summary.md
+            echo "" >> EVIDENCE/P11/zap_summary.md
+            jq -r '.site[]?.alerts[]?.risk' EVIDENCE/P11/zap_baseline.json 2>/dev/null \
+              | tr '[:upper:]' '[:upper:]' \
+              | sort \
+              | uniq -c \
+              | awk '{print "- " $2 ": " $1}' >> EVIDENCE/P11/zap_summary.md || echo "- no alerts or unexpected JSON" >> EVIDENCE/P11/zap_summary.md
+          else
+            echo "ZAP report not found" > EVIDENCE/P11/zap_summary.md
+          fi
+          echo "" >> EVIDENCE/P11/zap_summary.md
+          echo "Full HTML: EVIDENCE/P11/zap_baseline.html" >> EVIDENCE/P11/zap_summary.md
+
+      - name: Stop local server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill "$(cat server.pid)" || true
+            rm -f server.pid
+          fi
+          sleep 1 || true
+
+      - name: Upload DAST artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: p11-dast-evidence
+          path: EVIDENCE/P11/
+          retention-days: 30
