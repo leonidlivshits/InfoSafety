@@ -7,20 +7,18 @@ on:
       - "**/*.py"
       - "requirements*.txt"
       - ".github/workflows/ci-sbom-sca.yml"
-      - ".github/workflows/**"
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: sbom-sca-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   sbom_sca:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,50 +29,30 @@ jobs:
       - name: Install jq (for summary)
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Generate SBOM (Syft CycloneDX JSON)
+      - name: Generate SBOM (Syft CycloneDX)
         run: |
-          set -euo pipefail
-          echo "Generating SBOM -> EVIDENCE/P09/sbom.json"
           docker run --rm -v "$PWD":/work -w /work anchore/syft:latest \
             packages dir:. -o cyclonedx-json > EVIDENCE/P09/sbom.json
-        env:
-          DOCKER_BUILDKIT: 1
+        timeout-minutes: 10
 
-      - name: Show SBOM brief (top lines)
-        run: head -n 30 EVIDENCE/P09/sbom.json || true
-
-      - name: SCA Scan (Grype) using SBOM
+      - name: SCA Scan (Grype - scan SBOM)
         run: |
           set -euo pipefail
-          echo "Scanning SBOM with grype -> EVIDENCE/P09/sca_report.json"
-          # Use grype to scan the SBOM we just produced; output JSON report
           docker run --rm -v "$PWD":/work -w /work anchore/grype:latest \
             grype sbom:/work/EVIDENCE/P09/sbom.json -o json > EVIDENCE/P09/sca_report.json
+        timeout-minutes: 10
 
-      - name: Produce SCA summary (by severity)
+      - name: Create SCA summary
         run: |
-          set -euo pipefail
-          echo "# SCA summary for P09" > EVIDENCE/P09/sca_summary.md
-          if [ -s EVIDENCE/P09/sca_report.json ]; then
-            echo "Generated at: $(date --utc)" >> EVIDENCE/P09/sca_summary.md
-            echo "" >> EVIDENCE/P09/sca_summary.md
-            echo "Severity counts (from report):" >> EVIDENCE/P09/sca_summary.md
-            jq -r '.matches[].vulnerability.severity // "UNKNOWN"' EVIDENCE/P09/sca_report.json \
-              | tr '[:upper:]' '[:lower:]' \
-              | sort \
-              | uniq -c \
-              | awk '{print "- " $2 ": " $1}' >> EVIDENCE/P09/sca_summary.md || true
-            echo "" >> EVIDENCE/P09/sca_summary.md
-            echo "Top 10 findings (vuln id - package - severity):" >> EVIDENCE/P09/sca_summary.md
-            jq -r '.matches[] | [.vulnerability.id, .artifact.name, .vulnerability.severity] | @tsv' EVIDENCE/P09/sca_report.json \
-              | sed -n '1,10p' \
-              | awk -F'\t' '{print "- " $1 " — " $2 " — " $3}' >> EVIDENCE/P09/sca_summary.md || true
-          else
-            echo "No sca_report.json produced or file empty" >> EVIDENCE/P09/sca_summary.md
-          fi
-
-      - name: List evidence files
-        run: ls -l EVIDENCE/P09 || true
+          echo "# SCA summary" > EVIDENCE/P09/sca_summary.md
+          echo "" >> EVIDENCE/P09/sca_summary.md
+          echo "## counts by severity" >> EVIDENCE/P09/sca_summary.md
+          jq -r '.matches[].vulnerability.severity // "UNKNOWN"' EVIDENCE/P09/sca_report.json \
+            | tr '[:upper:]' '[:lower:]' | sort | uniq -c | awk '{print "- " $2 ": " $1}' >> EVIDENCE/P09/sca_summary.md || true
+          echo "" >> EVIDENCE/P09/sca_summary.md
+          echo "## top findings (first 20)" >> EVIDENCE/P09/sca_summary.md
+          jq -r '.matches[] | [.vulnerability.id, .artifact.name, .vulnerability.severity] | @tsv' EVIDENCE/P09/sca_report.json \
+            | head -n 20 | awk -F'\t' '{print "- " $1 " — " $2 " — " $3}' >> EVIDENCE/P09/sca_summary.md || true
 
       - name: Upload SBOM/SCA evidence
         if: always()
@@ -82,4 +60,4 @@ jobs:
         with:
           name: P09_EVIDENCE
           path: EVIDENCE/P09
-          retention-days: 90
+          retention-days: 14
