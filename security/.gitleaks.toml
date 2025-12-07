@@ -1,0 +1,27 @@
+title = "Project gitleaks allowlist"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Ignore test and evidence paths"
+paths = [
+  "EVIDENCE/",
+  "tests/",
+  "test_*.py",
+  "*/test_*.py",
+]
+
+commits = []
+
+regexes = [
+  '''test_.*[Pp]assword.*=''',
+  '''example_.*[Kk]ey.*=''',
+  '''fake_.*[Tt]oken.*=''',
+  '''1234567890''',
+]
+
+[[rules]]
+description = "Allow test API keys"
+id = "allow-test-keys"
+regex = '''(test|example|fake)_[a-zA-Z0-9_]*[Kk]ey'''
