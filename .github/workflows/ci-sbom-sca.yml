@@ -18,7 +18,8 @@ concurrency:
 jobs:
   sbom_sca:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,8 +40,8 @@ jobs:
         run: |
           set -euo pipefail
           docker run --rm -v "$PWD":/work -w /work anchore/grype:latest \
-            grype sbom:/work/EVIDENCE/P09/sbom.json -o json > EVIDENCE/P09/sca_report.json
-        timeout-minutes: 10
+            grype -o json sbom:/work/EVIDENCE/P09/sbom.json > EVIDENCE/P09/sca_report.json
+        timeout-minutes: 12
 
       - name: Create SCA summary
         run: |
