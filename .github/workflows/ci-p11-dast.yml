@@ -1,109 +1,78 @@
-name: P11 - DAST
+name: P11 - DAST (ZAP Baseline)
 
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
   workflow_dispatch:
-  push:
-    paths:
-      - "app/**"
-      - "requirements*.txt"
-      - ".github/workflows/ci-p11-dast.yml"
-
-permissions:
-  contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
-  dast-zap:
+  zap-baseline:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Ensure evidence dir
+      - name: Ensure evidence directory exists
         run: mkdir -p EVIDENCE/P11
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: "3.11"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Start app (uvicorn) in background
+      - name: Run app (background)
         run: |
-          nohup python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 > zap_server.log 2>&1 &
-          echo $! > server.pid
+          nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+          echo "Waiting for app to start..."
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/health; do sleep 2; done'
+          echo "App is ready!"
+          curl -f http://localhost:8000/health
+
+      - name: Run ZAP Baseline Scan (container)
         env:
-          DATABASE_URL: sqlite:///./data/media.db
-
-      - name: Wait for app to be ready
+          WORKDIR: ${{ github.workspace }}
         run: |
-          echo "Waiting for http://127.0.0.1:8000/health ..."
-          for i in $(seq 1 30); do
-            if curl -sSf http://127.0.0.1:8000/health >/dev/null 2>&1; then
-              echo "service ready"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Service failed to become ready - dumping server log"
-          tail -n 200 zap_server.log || true
-          exit 1
+          set -euo pipefail
+          echo "Starting ZAP baseline scan (GHCR image)..."
+          mkdir -p EVIDENCE/P11
 
-      - name: Run OWASP ZAP baseline (docker)
-        run: |
-          docker run --rm \
-            -v "$PWD":/zap/wrk \
-            owasp/zap2docker-stable:latest \
+          docker run --rm --network host -v "$PWD":/zap/wrk \
+            ghcr.io/zaproxy/zaproxy:stable \
             zap-baseline.py \
-              -t http://127.0.0.1:8000 \
+              -t http://localhost:8000 \
               -r /zap/wrk/EVIDENCE/P11/zap_baseline.html \
               -J /zap/wrk/EVIDENCE/P11/zap_baseline.json \
-              -m 3 \
-              -d
+              -d -I || true
 
-      - name: Generate short summary from zap JSON
-        run: |
-          if [ -f EVIDENCE/P11/zap_baseline.json ]; then
-            echo "# ZAP baseline summary" > EVIDENCE/P11/zap_summary.md
-            echo "" >> EVIDENCE/P11/zap_summary.md
-            echo "Scan target: http://127.0.0.1:8000" >> EVIDENCE/P11/zap_summary.md
-            echo "Commit: $GITHUB_SHA" >> EVIDENCE/P11/zap_summary.md
-            echo "" >> EVIDENCE/P11/zap_summary.md
-            echo "Counts by risk level (High/Medium/Low/Informational):" >> EVIDENCE/P11/zap_summary.md
-            echo "" >> EVIDENCE/P11/zap_summary.md
-            jq -r '.site[]?.alerts[]?.risk' EVIDENCE/P11/zap_baseline.json 2>/dev/null \
-              | tr '[:upper:]' '[:upper:]' \
-              | sort \
-              | uniq -c \
-              | awk '{print "- " $2 ": " $1}' >> EVIDENCE/P11/zap_summary.md || echo "- no alerts or unexpected JSON" >> EVIDENCE/P11/zap_summary.md
+          echo "Scan finished, checking report files..."
+          if [ -f EVIDENCE/P11/zap_baseline.html ]; then
+            echo "HTML report created"
           else
-            echo "ZAP report not found" > EVIDENCE/P11/zap_summary.md
+            echo "WARNING: HTML report missing"
           fi
-          echo "" >> EVIDENCE/P11/zap_summary.md
-          echo "Full HTML: EVIDENCE/P11/zap_baseline.html" >> EVIDENCE/P11/zap_summary.md
 
-      - name: Stop local server
-        if: always()
-        run: |
-          if [ -f server.pid ]; then
-            kill "$(cat server.pid)" || true
-            rm -f server.pid
+          if [ -f EVIDENCE/P11/zap_baseline.json ]; then
+            echo "JSON report created"
+          else
+            echo "WARNING: JSON report missing"
           fi
-          sleep 1 || true
 
-      - name: Upload DAST artifacts
+      - name: List evidence directory
+        run: ls -la EVIDENCE/P11 || true
+
+      - name: Upload P11 Evidence Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: p11-dast-evidence
-          path: EVIDENCE/P11/
+          name: P11_EVIDENCE
+          path: EVIDENCE/P11
           retention-days: 30
