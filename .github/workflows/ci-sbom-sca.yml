@@ -1,0 +1,80 @@
+name: Security - SBOM & SCA
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "**/*.py"
+      - "requirements*.txt"
+      - ".github/workflows/ci-sbom-sca.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sbom_sca:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure evidence dir
+        run: mkdir -p EVIDENCE/P09
+
+      - name: Generate SBOM (Syft CycloneDX)
+        run: |
+          docker run --rm -v "$PWD":/work -w /work anchore/syft:latest \
+            packages dir:. --scope all-layers -o cyclonedx-json > EVIDENCE/P09/sbom.json
+
+      - name: SCA Scan (Grype) - scan SBOM
+        run: |
+          docker run --rm -v "$PWD":/work -w /work anchore/grype:latest \
+            -o json sbom:/work/EVIDENCE/P09/sbom.json > EVIDENCE/P09/sca_report.json
+
+      - name: Generate SCA summary
+        run: |
+          echo "# SCA Scan Summary" > EVIDENCE/P09/sca_summary.md
+          echo "" >> EVIDENCE/P09/sca_summary.md
+          echo "**Scan Date:** $(date -u)" >> EVIDENCE/P09/sca_summary.md
+          echo "**Commit:** ${{ github.sha }}" >> EVIDENCE/P09/sca_summary.md
+          echo "" >> EVIDENCE/P09/sca_summary.md
+
+          if [ -f EVIDENCE/P09/sca_report.json ]; then
+            critical=$(jq '[.matches[] | select(.vulnerability.severity == "Critical")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            high=$(jq '[.matches[] | select(.vulnerability.severity == "High")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            medium=$(jq '[.matches[] | select(.vulnerability.severity == "Medium")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            low=$(jq '[.matches[] | select(.vulnerability.severity == "Low")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            unknown=$(jq '[.matches[] | select(.vulnerability.severity == "Unknown")] | length' EVIDENCE/P09/sca_report.json || echo "0")
+            total=$(jq '.matches | length' EVIDENCE/P09/sca_report.json || echo "0")
+
+            echo "| Severity | Count |" >> EVIDENCE/P09/sca_summary.md
+            echo "|----------|-------|" >> EVIDENCE/P09/sca_summary.md
+            echo "| Critical | $critical |" >> EVIDENCE/P09/sca_summary.md
+            echo "| High     | $high     |" >> EVIDENCE/P09/sca_summary.md
+            echo "| Medium   | $medium   |" >> EVIDENCE/P09/sca_summary.md
+            echo "| Low      | $low      |" >> EVIDENCE/P09/sca_summary.md
+            echo "| Unknown  | $unknown  |" >> EVIDENCE/P09/sca_summary.md
+            echo "| **Total** | **$total** |" >> EVIDENCE/P09/sca_summary.md
+
+            if [ "$critical" -gt 0 ]; then
+              echo "Found $critical Critical vulnerabilities - failing job"
+              exit 1
+            fi
+          else
+            echo "SCA report missing"
+            exit 1
+          fi
+
+      - name: Upload SBOM & SCA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-sca-evidence
+          path: EVIDENCE/P09/
+          retention-days: 30

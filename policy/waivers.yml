@@ -1,0 +1,22 @@
+waivers:
+  - id: WAIVER-001
+    vulnerability: "CVE-2020-XXXXX"
+    package: "lib==1.2.3"
+    reason: "False positive in dependency metadata; package used in limited, non-exploitable way"
+    owner: "livshits"
+    expires: "2025-12-09"
+    created: "2025-12-01"
+    reviewed: false
+    mitigations:
+      - "monitor upstream for patch"
+      - "restrict network egress for component"
+  - id: WAIVER-002
+    vulnerability: "CVE-2021-YYYYY"
+    package: "lib==0.1.0"
+    reason: "Upgrade breaks compatibility; require fix in dependent module"
+    owner: "team-backend"
+    expires: "2026-01-15"
+    created: "2025-12-05"
+    reviewed: false
+    mitigations:
+      - "plan upgrade in sprint 2026-01"

@@ -1,0 +1,78 @@
+name: P11 - DAST (ZAP Baseline)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  zap-baseline:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure evidence directory exists
+        run: mkdir -p EVIDENCE/P11
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Run app (background)
+        run: |
+          nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > app.log 2>&1 &
+          echo "Waiting for app to start..."
+          timeout 60 bash -c 'until curl -sf http://localhost:8000/health; do sleep 2; done'
+          echo "App is ready!"
+          curl -f http://localhost:8000/health
+
+      - name: Run ZAP Baseline Scan (container)
+        env:
+          WORKDIR: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          echo "Starting ZAP baseline scan (GHCR image)..."
+          mkdir -p EVIDENCE/P11
+
+          docker run --rm --network host -v "$PWD":/zap/wrk \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t http://localhost:8000 \
+              -r /zap/wrk/EVIDENCE/P11/zap_baseline.html \
+              -J /zap/wrk/EVIDENCE/P11/zap_baseline.json \
+              -d -I || true
+
+          echo "Scan finished, checking report files..."
+          if [ -f EVIDENCE/P11/zap_baseline.html ]; then
+            echo "HTML report created"
+          else
+            echo "WARNING: HTML report missing"
+          fi
+
+          if [ -f EVIDENCE/P11/zap_baseline.json ]; then
+            echo "JSON report created"
+          else
+            echo "WARNING: JSON report missing"
+          fi
+
+      - name: List evidence directory
+        run: ls -la EVIDENCE/P11 || true
+
+      - name: Upload P11 Evidence Artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: P11_EVIDENCE
+          path: EVIDENCE/P11
+          retention-days: 30

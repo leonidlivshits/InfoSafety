@@ -1,8 +1,22 @@
 services:
-  app:
+  web:
     build: .
+    image: media-catalog:latest
     ports:
       - "8000:8000"
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./data:/data:rw
+      - ./backups:/backups:rw
     environment:
-      - PYTHONUNBUFFERED=1
-    profiles: ["dev"]
+      - DATABASE_URL=sqlite:///data/media.db
+      - BACKUP_DEST_DIR=/backups
+      - BACKUP_ENABLED=true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
