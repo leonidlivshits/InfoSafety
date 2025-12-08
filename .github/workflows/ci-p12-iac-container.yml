@@ -1,0 +1,93 @@
+name: P12 - IaC & Container Security
+
+on:
+  push:
+    branches: [ main, p12-iac-container ]
+    paths:
+      - 'Dockerfile'
+      - 'iac/**'
+      - '.github/workflows/ci-p12-iac-container.yml'
+      - 'security/**'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'Dockerfile'
+      - 'iac/**'
+      - '.github/workflows/ci-p12-iac-container.yml'
+      - 'security/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  iac-container-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure evidence directory exists
+        run: mkdir -p EVIDENCE/P12
+
+      - name: Run Hadolint on Dockerfile
+        run: |
+          echo "=== Hadolint: linting Dockerfile ==="
+          if [ -f Dockerfile ]; then
+            docker run --rm -v "$PWD":/work -w /work hadolint/hadolint:latest \
+              hadolint -f json Dockerfile > EVIDENCE/P12/hadolint_report.json || true
+          else
+            echo "[]" > EVIDENCE/P12/hadolint_report.json
+          fi
+          ls -la EVIDENCE/P12 || true
+
+      - name: Build Docker image for scanning
+        run: |
+          echo "=== Building docker image (for Trivy) ==="
+          IMAGE_TAG=media-catalog:ci-${{ github.sha }}
+          if [ -f Dockerfile ]; then
+            docker build -t $IMAGE_TAG . || true
+            echo "$IMAGE_TAG" > .scan_image_tag
+          else
+            echo "no-image" > .scan_image_tag
+            echo "Dockerfile not found, skipping image build"
+          fi
+          ls -la . || true
+
+      - name: Run Trivy vulnerability scan (image)
+        run: |
+          echo "=== Trivy: scanning image ==="
+          IMAGE_TAG=$(cat .scan_image_tag)
+          if [ "$IMAGE_TAG" != "no-image" ]; then
+            docker run --rm -v "$PWD":/work aquasec/trivy:latest \
+              image --format json --output /work/EVIDENCE/P12/trivy_report.json "$IMAGE_TAG" || true
+          else
+            echo "{}" > EVIDENCE/P12/trivy_report.json
+          fi
+          ls -la EVIDENCE/P12 || true
+
+      - name: Run Checkov on IaC (if present)
+        run: |
+          echo "=== Checkov: scanning iac/ (if exists) ==="
+          if [ -d iac ]; then
+            docker run --rm -v "$PWD":/work bridgecrew/checkov:latest \
+              -d /work/iac -o json > EVIDENCE/P12/checkov_report.json || true
+          else
+            echo "{}" > EVIDENCE/P12/checkov_report.json
+            echo "iac/ directory not found - skipping Checkov"
+          fi
+          ls -la EVIDENCE/P12 || true
+
+      - name: Upload P12 evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: P12_EVIDENCE
+          path: EVIDENCE/P12
+          retention-days: 14
